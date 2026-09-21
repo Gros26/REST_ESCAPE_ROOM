@@ -14,6 +14,8 @@ uvicorn app.main:app --reload
 
 Interactive documentation is available at `http://127.0.0.1:8000/docs`.
 
+Opening `http://127.0.0.1:8000/` displays a welcome response with the first request and all available routes.
+
 `GEMINI_API_KEY` is optional. Without it, the game uses local clues. With it, `GET /api/clues/{level}` generates clues with `gemini-2.5-flash`. The API key is never returned to the client.
 
 ## Game flow

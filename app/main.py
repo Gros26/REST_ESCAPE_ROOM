@@ -79,6 +79,24 @@ app = FastAPI(
 )
 
 
+@app.get("/")
+def welcome() -> dict[str, Any]:
+    return {
+        "message": "Welcome to the REST Escape Room.",
+        "instructions": "Start by requesting the clue for level 1.",
+        "first_request": "GET /api/clues/1",
+        "session_header": "X-Session-ID: team-1",
+        "documentation": "/docs",
+        "available_routes": {
+            "clues": "GET /api/clues/{level}",
+            "files": "GET /api/files?level=top_secret&year=2024",
+            "accesses": "POST /api/accesses",
+            "drones": "DELETE /api/drones/{drone_id}",
+            "status": "GET /api/status",
+        },
+    }
+
+
 @app.get("/api/clues/{level}")
 def get_clue(level: int, x_session_id: str = Header(default="demo")) -> dict[str, Any]:
     if level not in (1, 2, 3):

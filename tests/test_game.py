@@ -10,6 +10,14 @@ def setup_function() -> None:
     sessions.clear()
 
 
+def test_root_welcomes_players() -> None:
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert response.json()["first_request"] == "GET /api/clues/1"
+    assert response.json()["documentation"] == "/docs"
+
+
 def test_full_winning_path() -> None:
     headers = {"X-Session-ID": "team-1"}
 
