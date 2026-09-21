@@ -1,4 +1,6 @@
+import json
 import os
+import secrets
 from dataclasses import dataclass
 from typing import Any
 
@@ -15,14 +17,29 @@ except ImportError:  # pragma: no cover - allows startup without the SDK
 
 load_dotenv()
 
+DEFAULT_GEMINI_MODELS = (
+    "gemini-3.6-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-flash-lite-latest",
+)
 
-ACCESS_KEY = os.getenv("LEVEL_1_ACCESS_KEY", "KEY-ORBIT-2024")
-GEMINI_MODEL = "gemini-2.5-flash"
+
+@dataclass
+class Campaign:
+    title: str
+    story: str
+    file_year: int
+    security_level: str
+    alias: str
+    role: str
+    token: str
+    core_id: str
+    clues: dict[int, str]
 
 
 @dataclass
 class GameState:
-    level: int = 1
+    mission: int = 1
     won: bool = False
 
 
@@ -32,82 +49,198 @@ sessions: dict[str, GameState] = {}
 class AccessRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    access_type: str
-    key: str
+    alias: str
+    role: str
+
+
+class FirewallRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    state: str
+    security_token: str
 
 
 def get_game_state(session_id: str) -> GameState:
     return sessions.setdefault(session_id, GameState())
 
 
-def local_clue(level: int) -> str:
-    clues = {
-        1: "Level 1: The terminal does not listen to the body. Find two values in the query: level and year.",
-        2: "Level 2: The message now travels inside the body. Use POST and send access_type and key as JSON.",
-        3: "Level 3: The final target is in the address itself. Delete the drone with ID DRN-808.",
+def local_campaign() -> Campaign:
+    suffix = secrets.token_hex(2).upper()
+    return Campaign(
+        title=f"Operation {secrets.choice(['Blackout', 'Nightfall', 'Cipher', 'Redline'])}",
+        story="An enemy control system is hiding its core behind four REST security layers.",
+        file_year=secrets.choice([2023, 2024, 2025, 2026]),
+        security_level=secrets.choice(["critical", "classified", "omega", "restricted"]),
+        alias=secrets.choice(["Shadow", "Raven", "Specter", "Cipher"]),
+        role="Hacker",
+        token=f"TKN-{suffix}",
+        core_id=f"NUC-{secrets.choice(['Omega', 'Astra', 'Vega', 'Nova'])}",
+        clues={
+            1: "Mission 1: Read the classified files. Send GET /api/files with exactly level={security_level} and year={file_year} as query parameters.",
+            2: "Mission 2: Create a new access resource. Send POST /api/accesses with this JSON body: {{\"alias\": \"{alias}\", \"role\": \"{role}\"}}.",
+            3: "Mission 3: Partially update the firewall. Send PATCH /api/firewall with this JSON body: {{\"state\": \"offline\", \"security_token\": \"{token}\"}}.",
+            4: "Mission 4: Destroy the exposed core. Send DELETE /api/cores/{core_id} using the path variable.",
+        },
+    )
+
+
+def format_clues(campaign: Campaign) -> None:
+    for mission, clue in campaign.clues.items():
+        campaign.clues[mission] = clue.format(
+            security_level=campaign.security_level,
+            file_year=campaign.file_year,
+            alias=campaign.alias,
+            role=campaign.role,
+            token=campaign.token,
+            core_id=campaign.core_id,
+        )
+
+
+def build_explicit_clues(campaign: Campaign) -> dict[int, str]:
+    return {
+        1: (
+            f"Mission 1: The archive is read-only. Find the files resource and filter it with "
+            f"two query keys: level and year. The security value is '{campaign.security_level}', "
+            f"and the year is {campaign.file_year}. "
+            "Do not send a request body."
+        ),
+        2: (
+            f"Mission 2: The gate accepts a new access record. Create it with the write method "
+            f"and a JSON body containing two fields. The alias is '{campaign.alias}'; the role is "
+            f"'{campaign.role}'. The field names are ordinary English nouns."
+        ),
+        3: (
+            f"Mission 3: The firewall is not destroyed; change only its state. Use the partial-update "
+            f"method and prove your access with the token '{campaign.token}'. Set the state to the "
+            "word that means disconnected."
+        ),
+        4: (
+            f"Mission 4: The exposed core must disappear. Target the cores collection directly, "
+            f"placing its identifier '{campaign.core_id}' in the address rather than in a body. "
+            "Use the destructive HTTP method."
+        ),
     }
-    return clues[level]
 
 
-def generate_clue(level: int) -> str:
+def campaign_from_data(data: dict[str, Any]) -> Campaign:
+    campaign = Campaign(
+        title=str(data["title"]),
+        story=str(data["story"]),
+        file_year=int(data["file_year"]),
+        security_level=str(data["security_level"]),
+        alias=str(data["alias"]),
+        role=str(data["role"]),
+        token=str(data["token"]),
+        core_id=str(data["core_id"]),
+        clues={int(key): str(value) for key, value in data["clues"].items()},
+    )
+    if set(campaign.clues) != {1, 2, 3, 4}:
+        raise ValueError("Campaign must contain four clues")
+    return campaign
+
+
+def generate_campaign() -> tuple[Campaign, str]:
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key or genai is None:
-        return local_clue(level)
+        campaign = local_campaign()
+        format_clues(campaign)
+        return campaign, "local_mode"
 
-    prompt = f"""Act as an enemy and sarcastic AI in an educational REST escape room.
-Generate one brief, cryptic, student-friendly clue for level {level}.
-The solution must point to that level's REST route, but do not reveal every value literally.
-Level 1 validates query parameters in GET /api/files.
-Level 2 validates body parameters in POST /api/accesses.
-Level 3 validates the path variable in DELETE /api/drones/{{drone_id}}.
-Do not use markdown, invent routes, or include the API key."""
+    prompt = """Create one educational REST escape-room campaign as valid JSON only.
+It must contain exactly four sequential missions:
+1) GET /api/files with query parameters level and year.
+2) POST /api/accesses with JSON body alias and role.
+3) PATCH /api/firewall with JSON body state and security_token.
+4) DELETE /api/cores/{core_id} with a path variable.
+Use exactly these JSON keys: title, story, file_year, security_level, alias, role, token, core_id, clues.
+clues must be an object with string keys 1, 2, 3, 4. Each clue must be a different short
+enemy-AI riddle, not a reusable template. It must describe the REST concept and provide enough
+indirect information to solve the mission, but must not give the complete copy-paste request,
+full URL with query string, or complete JSON body. It must still mention the correct HTTP method
+and route, and may reveal individual values as puzzle hints. Never say that a later mission is
+complete before its own request is made. Use safe fictional values only. Do not include markdown,
+API keys, or extra keys."""
 
-    try:
-        client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
-        text = (response.text or "").strip()
-        return text or local_clue(level)
-    except Exception:
-        # Keep the game usable when Gemini is temporarily unavailable.
-        return local_clue(level)
+    configured_models = os.getenv("GEMINI_MODEL", "")
+    models = tuple(model.strip() for model in configured_models.split(",") if model.strip())
+    models = models or DEFAULT_GEMINI_MODELS
+    client = genai.Client(api_key=api_key)
+
+    for model in models:
+        try:
+            response = client.models.generate_content(model=model, contents=prompt)
+            response_text = (response.text or "").strip()
+            if response_text.startswith("```"):
+                response_text = response_text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+            campaign = campaign_from_data(json.loads(response_text))
+            return campaign, model
+        except (Exception, KeyError, TypeError, ValueError):
+            continue
+
+    campaign = local_campaign()
+    format_clues(campaign)
+    return campaign, "local_mode"
+
+
+campaign, campaign_source = generate_campaign()
 
 
 app = FastAPI(
     title="REST Escape Room",
     description="Educational API for practicing HTTP methods, URIs, queries, bodies, and paths.",
-    version="1.0.0",
+    version="2.0.0",
 )
+
+
+def next_mission(mission: int) -> dict[str, Any] | None:
+    if mission == 2:
+        return {
+            "mission": 2,
+            "clue_endpoint": "GET /api/missions/2",
+            "objective": "Create a new access resource with the required JSON body.",
+        }
+    if mission == 3:
+        return {
+            "mission": 3,
+            "clue_endpoint": "GET /api/missions/3",
+            "objective": "Partially update the firewall and set its state to offline.",
+        }
+    if mission == 4:
+        return {
+            "mission": 4,
+            "clue_endpoint": "GET /api/missions/4",
+            "objective": "Delete the exposed core using its path variable.",
+        }
+    return None
 
 
 @app.get("/")
 def welcome() -> dict[str, Any]:
     return {
         "message": "Welcome to the REST Escape Room.",
-        "instructions": "Start by requesting the clue for level 1.",
-        "first_request": "GET /api/clues/1",
+        "campaign": campaign.title,
+        "story": campaign.story,
+        "instructions": "Use one X-Session-ID per team. Start by requesting mission 1.",
+        "first_request": "GET /api/missions/1",
         "session_header": "X-Session-ID: team-1",
         "documentation": "/docs",
-        "available_routes": {
-            "clues": "GET /api/clues/{level}",
-            "files": "GET /api/files?level=top_secret&year=2024",
-            "accesses": "POST /api/accesses",
-            "drones": "DELETE /api/drones/{drone_id}",
-            "status": "GET /api/status",
-        },
     }
 
 
-@app.get("/api/clues/{level}")
-def get_clue(level: int, x_session_id: str = Header(default="demo")) -> dict[str, Any]:
-    if level not in (1, 2, 3):
-        raise HTTPException(status_code=404, detail="That level does not exist.")
+@app.get("/api/missions/{mission_number}")
+def get_mission(mission_number: int, x_session_id: str = Header(default="demo")) -> dict[str, Any]:
+    if mission_number not in (1, 2, 3, 4):
+        raise HTTPException(status_code=404, detail="That mission does not exist.")
 
     state = get_game_state(x_session_id)
+    if mission_number != state.mission:
+        raise HTTPException(status_code=409, detail=f"Your current mission is {state.mission}.")
+
     return {
-        "level": level,
-        "current_level": state.level,
-        "clue": generate_clue(level),
-        "generated_by": "gemini-2.5-flash" if os.getenv("GEMINI_API_KEY") and genai else "local_mode",
+        "mission": mission_number,
+        "campaign": campaign.title,
+        "clue": campaign.clues[mission_number],
+        "generated_by": campaign_source,
     }
 
 
@@ -119,47 +252,61 @@ def inspect_files(
     x_session_id: str = Header(default="demo"),
 ) -> JSONResponse:
     query_items = list(request.query_params.multi_items())
-    exact_query = len(query_items) == 2 and dict(query_items) == {"level": "top_secret", "year": "2024"}
-    if not exact_query or level != "top_secret" or year != 2024:
-        raise HTTPException(
-            status_code=400,
-            detail="Exactly ?level=top_secret&year=2024 is required.",
-        )
+    exact_query = len(query_items) == 2 and dict(query_items) == {
+        "level": campaign.security_level,
+        "year": str(campaign.file_year),
+    }
+    if not exact_query or level != campaign.security_level or year != campaign.file_year:
+        raise HTTPException(status_code=400, detail="Use exactly the values requested by mission 1.")
 
     state = get_game_state(x_session_id)
-    state.level = max(state.level, 2)
+    if state.mission != 1:
+        raise HTTPException(status_code=409, detail=f"Your current mission is {state.mission}.")
+    state.mission = 2
     return JSONResponse(
         status_code=200,
-        content={"message": "Classified file unlocked.", "access_key": ACCESS_KEY, "next_level": 2},
+        content={"message": "Classified file found.", "next_mission": next_mission(2)},
     )
 
 
 @app.post("/api/accesses", status_code=status.HTTP_201_CREATED)
 def open_access(data: AccessRequest, x_session_id: str = Header(default="demo")) -> dict[str, Any]:
-    if data.access_type != "digital_fingerprint" or data.key != ACCESS_KEY:
-        raise HTTPException(status_code=403, detail="Incorrect fingerprint or key.")
+    if data.alias != campaign.alias or data.role != campaign.role:
+        raise HTTPException(status_code=403, detail="The alias or role is incorrect.")
 
     state = get_game_state(x_session_id)
-    state.level = max(state.level, 3)
-    return {
-        "message": "Access granted. The final target is in the drone route.",
-        "next_level": 3,
-        "next_method": "DELETE",
-    }
+    if state.mission != 2:
+        raise HTTPException(status_code=409, detail=f"Your current mission is {state.mission}.")
+    state.mission = 3
+    return {"message": "Access granted.", "security_token": campaign.token, "next_mission": next_mission(3)}
 
 
-@app.delete("/api/drones/{drone_id}", status_code=status.HTTP_204_NO_CONTENT)
-def destroy_drone(drone_id: str, x_session_id: str = Header(default="demo")) -> None:
-    if drone_id != "DRN-808":
-        raise HTTPException(status_code=404, detail="Drone not found.")
+@app.patch("/api/firewall")
+def update_firewall(data: FirewallRequest, x_session_id: str = Header(default="demo")) -> dict[str, Any]:
+    if data.state != "offline" or data.security_token != campaign.token:
+        raise HTTPException(status_code=403, detail="The firewall state or token is incorrect.")
 
     state = get_game_state(x_session_id)
+    if state.mission != 3:
+        raise HTTPException(status_code=409, detail=f"Your current mission is {state.mission}.")
+    state.mission = 4
+    return {"message": f"Firewall breached. Core {campaign.core_id} is exposed.", "next_mission": next_mission(4)}
+
+
+@app.delete("/api/cores/{core_id}", status_code=status.HTTP_204_NO_CONTENT)
+def destroy_core(core_id: str, x_session_id: str = Header(default="demo")) -> None:
+    state = get_game_state(x_session_id)
+    if state.mission != 4:
+        raise HTTPException(status_code=409, detail=f"Your current mission is {state.mission}.")
+    if core_id != campaign.core_id:
+        raise HTTPException(status_code=404, detail="Core not found.")
+
     state.won = True
-    state.level = 4
+    state.mission = 5
     return None
 
 
 @app.get("/api/status")
 def game_status(x_session_id: str = Header(default="demo")) -> dict[str, Any]:
     state = get_game_state(x_session_id)
-    return {"current_level": state.level, "won": state.won}
+    return {"current_mission": state.mission, "won": state.won, "campaign": campaign.title}

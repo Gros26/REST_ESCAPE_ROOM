@@ -1,6 +1,6 @@
 # REST Escape Room
 
-Educational API built with Python and FastAPI. Players practice HTTP methods, URIs, query parameters, body parameters, and path variables while completing three levels.
+Educational API built with Python and FastAPI. Players practice HTTP methods, URIs, query parameters, JSON bodies, and path variables through a four-mission sequence.
 
 ## Getting started
 
@@ -12,42 +12,58 @@ cp .env.example .env
 uvicorn app.main:app --reload
 ```
 
-Interactive documentation is available at `http://127.0.0.1:8000/docs`.
+Open `http://127.0.0.1:8000/` for the welcome message or `http://127.0.0.1:8000/docs` for interactive API documentation.
 
-Opening `http://127.0.0.1:8000/` displays a welcome response with the first request and all available routes.
+## Dynamic campaigns
 
-`GEMINI_API_KEY` is optional. Without it, the game uses local clues. With it, `GET /api/clues/{level}` generates clues with `gemini-2.5-flash`. The API key is never returned to the client.
+Every server restart creates a new campaign. If `GEMINI_API_KEY` is configured, Gemini generates the campaign story, values, and explicit English clues. The default model is `gemini-3.6-flash`; the application automatically tries other configured free-tier models if needed. Set `GEMINI_MODEL` in `.env` to override it, or provide a comma-separated list such as `gemini-3.6-flash,gemini-3.5-flash-lite`.
 
-## Game flow
+Gemini only creates the narrative and challenge values. The backend validates every value and controls the mission sequence, so an AI response cannot bypass a mission.
 
-Use the same `X-Session-ID` header for every request so the server can preserve a team's progress. Two people in different locations can share progress by using the same ID and connecting to the same public server:
+## Sequential game flow
+
+Use one `X-Session-ID` per team. After each successful mission, the response includes `next_mission`. Then request that mission's clue before solving it:
 
 ```bash
 export SESSION=team-1
 
-# Request the current level's clue
-curl -H "X-Session-ID: $SESSION" http://127.0.0.1:8000/api/clues/1
-
-# Level 1: exact query parameters
+# 1. Request the first explicit mission
 curl -H "X-Session-ID: $SESSION" \
-  "http://127.0.0.1:8000/api/files?level=top_secret&year=2024"
+  http://127.0.0.1:8000/api/missions/1
 
-# Level 2: JSON body and POST method
-curl -i -X POST -H "Content-Type: application/json" \
+# 2. Solve mission 1 using the level and year shown in its clue
+curl -H "X-Session-ID: $SESSION" \
+  "http://127.0.0.1:8000/api/files?level=critical&year=2025"
+
+# 3. Request mission 2. Use the alias and role shown in its clue.
+curl -H "X-Session-ID: $SESSION" \
+  http://127.0.0.1:8000/api/missions/2
+
+curl -X POST -H "Content-Type: application/json" \
   -H "X-Session-ID: $SESSION" \
-  -d '{"access_type":"digital_fingerprint","key":"KEY-ORBIT-2024"}' \
+  -d '{"alias":"Shadow","role":"Hacker"}' \
   http://127.0.0.1:8000/api/accesses
 
-# Level 3: path variable and DELETE method
+# 4. Request mission 3, then use its token in the PATCH body.
+curl -H "X-Session-ID: $SESSION" \
+  http://127.0.0.1:8000/api/missions/3
+
+curl -X PATCH -H "Content-Type: application/json" \
+  -H "X-Session-ID: $SESSION" \
+  -d '{"state":"offline","security_token":"TKN-AB12"}' \
+  http://127.0.0.1:8000/api/firewall
+
+# 5. Request mission 4, then delete the core ID shown in its clue.
+curl -H "X-Session-ID: $SESSION" \
+  http://127.0.0.1:8000/api/missions/4
+
 curl -i -X DELETE -H "X-Session-ID: $SESSION" \
-  http://127.0.0.1:8000/api/drones/DRN-808
+  http://127.0.0.1:8000/api/cores/NUC-Omega
 ```
 
-The `GET /api/status` route shows the current progress. State is kept in memory for classroom simplicity; restarting the server resets all games. This means the shared session works across distant clients while this same server process is running, but it is not yet persistent across restarts or multiple server instances.
+The values in this example are illustrative. Always use the values from the current campaign's clues because they change after a restart.
 
-## Extending the game
-
-To add a level, add its local clue and prompt in `generate_clue`, add a route that validates the new REST concept, and update `GameState.level` when the challenge is completed. Gemini does not control security state; it only writes the clue. This separation prevents an unpredictable AI response from skipping levels.
+`GET /api/status` shows the team's current mission. A shared session works between distant clients when they connect to the same server and use the same `X-Session-ID`. State is currently held in memory, so restarting the server resets team progress and creates a new campaign.
 
 ## Tests
 
