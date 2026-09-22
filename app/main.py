@@ -66,7 +66,7 @@ def get_game_state(session_id: str) -> GameState:
 
 def local_campaign() -> Campaign:
     suffix = secrets.token_hex(2).upper()
-    return Campaign(
+    campaign = Campaign(
         title=f"Operation {secrets.choice(['Blackout', 'Nightfall', 'Cipher', 'Redline'])}",
         story="An enemy control system is hiding its core behind four REST security layers.",
         file_year=secrets.choice([2023, 2024, 2025, 2026]),
@@ -75,25 +75,10 @@ def local_campaign() -> Campaign:
         role="Hacker",
         token=f"TKN-{suffix}",
         core_id=f"NUC-{secrets.choice(['Omega', 'Astra', 'Vega', 'Nova'])}",
-        clues={
-            1: "Mission 1: Read the classified files. Send GET /api/files with exactly level={security_level} and year={file_year} as query parameters.",
-            2: "Mission 2: Create a new access resource. Send POST /api/accesses with this JSON body: {{\"alias\": \"{alias}\", \"role\": \"{role}\"}}.",
-            3: "Mission 3: Partially update the firewall. Send PATCH /api/firewall with this JSON body: {{\"state\": \"offline\", \"security_token\": \"{token}\"}}.",
-            4: "Mission 4: Destroy the exposed core. Send DELETE /api/cores/{core_id} using the path variable.",
-        },
+        clues={},
     )
-
-
-def format_clues(campaign: Campaign) -> None:
-    for mission, clue in campaign.clues.items():
-        campaign.clues[mission] = clue.format(
-            security_level=campaign.security_level,
-            file_year=campaign.file_year,
-            alias=campaign.alias,
-            role=campaign.role,
-            token=campaign.token,
-            core_id=campaign.core_id,
-        )
+    campaign.clues = build_explicit_clues(campaign)
+    return campaign
 
 
 def build_explicit_clues(campaign: Campaign) -> dict[int, str]:
@@ -143,15 +128,18 @@ def generate_campaign() -> tuple[Campaign, str]:
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key or genai is None:
         campaign = local_campaign()
-        format_clues(campaign)
         return campaign, "local_mode"
 
     prompt = """Create one educational REST escape-room campaign as valid JSON only.
 It must contain exactly four sequential missions:
 1) GET /api/files with query parameters level and year.
 2) POST /api/accesses with JSON body alias and role.
-3) PATCH /api/firewall with JSON body state and security_token.
+3) PATCH /api/firewall with JSON body state (the value must always be exactly
+   the string 'offline') and security_token.
 4) DELETE /api/cores/{core_id} with a path variable.
+Any field with a fixed, single valid value (such as state) must always resolve
+to that exact value, but you may still phrase the clue as an indirect riddle
+around it.
 Use exactly these JSON keys: title, story, file_year, security_level, alias, role, token, core_id, clues.
 clues must be an object with string keys 1, 2, 3, 4. Each clue must be a different short
 enemy-AI riddle, not a reusable template. It must describe the REST concept and provide enough
@@ -178,7 +166,6 @@ API keys, or extra keys."""
             continue
 
     campaign = local_campaign()
-    format_clues(campaign)
     return campaign, "local_mode"
 
 
