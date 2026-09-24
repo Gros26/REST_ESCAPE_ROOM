@@ -1,13 +1,14 @@
 from fastapi.testclient import TestClient
 
-from app.main import app, campaign, sessions
+from app.main import app, campaign, game_state
 
 
 client = TestClient(app)
 
 
 def setup_function() -> None:
-    sessions.clear()
+    game_state.mission = 1
+    game_state.won = False
 
 
 def test_root_welcomes_players() -> None:
@@ -19,37 +20,32 @@ def test_root_welcomes_players() -> None:
 
 
 def test_full_winning_path() -> None:
-    headers = {"X-Session-ID": "team-1"}
-
-    clue = client.get("/api/missions/1", headers=headers)
+    clue = client.get("/api/missions/1")
     assert clue.status_code == 200
     assert clue.json()["clue"]
     assert clue.json()["generated_by"]
 
     files = client.get(
         f"/api/files?level={campaign.security_level}&year={campaign.file_year}",
-        headers=headers,
     )
     assert files.status_code == 200
     assert files.json()["next_mission"]["mission"] == 2
 
     access = client.post(
         "/api/accesses",
-        headers=headers,
         json={"alias": campaign.alias, "role": campaign.role},
     )
     assert access.status_code == 201
 
     firewall = client.patch(
         "/api/firewall",
-        headers=headers,
         json={"state": "offline", "security_token": campaign.token},
     )
     assert firewall.status_code == 200
 
-    destroyed = client.delete(f"/api/cores/{campaign.core_id}", headers=headers)
+    destroyed = client.delete(f"/api/cores/{campaign.core_id}")
     assert destroyed.status_code == 204
-    assert client.get("/api/status", headers=headers).json()["won"] is True
+    assert client.get("/api/status").json()["won"] is True
 
 
 def test_files_requires_exact_query_parameters() -> None:

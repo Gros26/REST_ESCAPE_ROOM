@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Header, HTTPException, Query, Request, status
+from fastapi import FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
@@ -43,7 +43,7 @@ class GameState:
     won: bool = False
 
 
-sessions: dict[str, GameState] = {}
+game_state = GameState()
 
 
 class AccessRequest(BaseModel):
@@ -58,10 +58,6 @@ class FirewallRequest(BaseModel):
 
     state: str
     security_token: str
-
-
-def get_game_state(session_id: str) -> GameState:
-    return sessions.setdefault(session_id, GameState())
 
 
 def local_campaign() -> Campaign:
@@ -207,21 +203,19 @@ def welcome() -> dict[str, Any]:
         "message": "Welcome to the REST Escape Room.",
         "campaign": campaign.title,
         "story": campaign.story,
-        "instructions": "Use one X-Session-ID per team. Start by requesting mission 1.",
+        "instructions": "Start by requesting mission 1.",
         "first_request": "GET /api/missions/1",
-        "session_header": "X-Session-ID: team-1",
         "documentation": "/docs",
     }
 
 
 @app.get("/api/missions/{mission_number}")
-def get_mission(mission_number: int, x_session_id: str = Header(default="demo")) -> dict[str, Any]:
+def get_mission(mission_number: int) -> dict[str, Any]:
     if mission_number not in (1, 2, 3, 4):
         raise HTTPException(status_code=404, detail="That mission does not exist.")
 
-    state = get_game_state(x_session_id)
-    if mission_number != state.mission:
-        raise HTTPException(status_code=409, detail=f"Your current mission is {state.mission}.")
+    if mission_number != game_state.mission:
+        raise HTTPException(status_code=409, detail=f"Your current mission is {game_state.mission}.")
 
     return {
         "mission": mission_number,
@@ -236,7 +230,6 @@ def inspect_files(
     request: Request,
     level: str | None = Query(default=None),
     year: int | None = Query(default=None),
-    x_session_id: str = Header(default="demo"),
 ) -> JSONResponse:
     query_items = list(request.query_params.multi_items())
     exact_query = len(query_items) == 2 and dict(query_items) == {
@@ -246,10 +239,9 @@ def inspect_files(
     if not exact_query or level != campaign.security_level or year != campaign.file_year:
         raise HTTPException(status_code=400, detail="Use exactly the values requested by mission 1.")
 
-    state = get_game_state(x_session_id)
-    if state.mission != 1:
-        raise HTTPException(status_code=409, detail=f"Your current mission is {state.mission}.")
-    state.mission = 2
+    if game_state.mission != 1:
+        raise HTTPException(status_code=409, detail=f"Your current mission is {game_state.mission}.")
+    game_state.mission = 2
     return JSONResponse(
         status_code=200,
         content={"message": "Classified file found.", "next_mission": next_mission(2)},
@@ -257,43 +249,39 @@ def inspect_files(
 
 
 @app.post("/api/accesses", status_code=status.HTTP_201_CREATED)
-def open_access(data: AccessRequest, x_session_id: str = Header(default="demo")) -> dict[str, Any]:
+def open_access(data: AccessRequest) -> dict[str, Any]:
     if data.alias != campaign.alias or data.role != campaign.role:
         raise HTTPException(status_code=403, detail="The alias or role is incorrect.")
 
-    state = get_game_state(x_session_id)
-    if state.mission != 2:
-        raise HTTPException(status_code=409, detail=f"Your current mission is {state.mission}.")
-    state.mission = 3
+    if game_state.mission != 2:
+        raise HTTPException(status_code=409, detail=f"Your current mission is {game_state.mission}.")
+    game_state.mission = 3
     return {"message": "Access granted.", "security_token": campaign.token, "next_mission": next_mission(3)}
 
 
 @app.patch("/api/firewall")
-def update_firewall(data: FirewallRequest, x_session_id: str = Header(default="demo")) -> dict[str, Any]:
+def update_firewall(data: FirewallRequest) -> dict[str, Any]:
     if data.state != "offline" or data.security_token != campaign.token:
         raise HTTPException(status_code=403, detail="The firewall state or token is incorrect.")
 
-    state = get_game_state(x_session_id)
-    if state.mission != 3:
-        raise HTTPException(status_code=409, detail=f"Your current mission is {state.mission}.")
-    state.mission = 4
+    if game_state.mission != 3:
+        raise HTTPException(status_code=409, detail=f"Your current mission is {game_state.mission}.")
+    game_state.mission = 4
     return {"message": f"Firewall breached. Core {campaign.core_id} is exposed.", "next_mission": next_mission(4)}
 
 
 @app.delete("/api/cores/{core_id}", status_code=status.HTTP_204_NO_CONTENT)
-def destroy_core(core_id: str, x_session_id: str = Header(default="demo")) -> None:
-    state = get_game_state(x_session_id)
-    if state.mission != 4:
-        raise HTTPException(status_code=409, detail=f"Your current mission is {state.mission}.")
+def destroy_core(core_id: str) -> None:
+    if game_state.mission != 4:
+        raise HTTPException(status_code=409, detail=f"Your current mission is {game_state.mission}.")
     if core_id != campaign.core_id:
         raise HTTPException(status_code=404, detail="Core not found.")
 
-    state.won = True
-    state.mission = 5
+    game_state.won = True
+    game_state.mission = 5
     return None
 
 
 @app.get("/api/status")
-def game_status(x_session_id: str = Header(default="demo")) -> dict[str, Any]:
-    state = get_game_state(x_session_id)
-    return {"current_mission": state.mission, "won": state.won, "campaign": campaign.title}
+def game_status() -> dict[str, Any]:
+    return {"current_mission": game_state.mission, "won": game_state.won, "campaign": campaign.title}

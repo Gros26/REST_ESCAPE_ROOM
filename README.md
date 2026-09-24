@@ -22,48 +22,38 @@ Gemini only creates the narrative and challenge values. The backend validates ev
 
 ## Sequential game flow
 
-Use one `X-Session-ID` per team. After each successful mission, the response includes `next_mission`. Then request that mission's clue before solving it:
+The server keeps one game state in memory. After each successful mission, the response includes `next_mission`. Then request that mission's clue before solving it:
 
 ```bash
-export SESSION=team-1
-
 # 1. Request the first explicit mission
-curl -H "X-Session-ID: $SESSION" \
-  http://127.0.0.1:8000/api/missions/1
+curl http://127.0.0.1:8000/api/missions/1
 
 # 2. Solve mission 1 using the level and year shown in its clue
-curl -H "X-Session-ID: $SESSION" \
-  "http://127.0.0.1:8000/api/files?level=critical&year=2025"
+curl "http://127.0.0.1:8000/api/files?level=critical&year=2025"
 
 # 3. Request mission 2. Use the alias and role shown in its clue.
-curl -H "X-Session-ID: $SESSION" \
-  http://127.0.0.1:8000/api/missions/2
+curl http://127.0.0.1:8000/api/missions/2
 
 curl -X POST -H "Content-Type: application/json" \
-  -H "X-Session-ID: $SESSION" \
   -d '{"alias":"Shadow","role":"Hacker"}' \
   http://127.0.0.1:8000/api/accesses
 
 # 4. Request mission 3, then use its token in the PATCH body.
-curl -H "X-Session-ID: $SESSION" \
-  http://127.0.0.1:8000/api/missions/3
+curl http://127.0.0.1:8000/api/missions/3
 
 curl -X PATCH -H "Content-Type: application/json" \
-  -H "X-Session-ID: $SESSION" \
   -d '{"state":"offline","security_token":"TKN-AB12"}' \
   http://127.0.0.1:8000/api/firewall
 
 # 5. Request mission 4, then delete the core ID shown in its clue.
-curl -H "X-Session-ID: $SESSION" \
-  http://127.0.0.1:8000/api/missions/4
+curl http://127.0.0.1:8000/api/missions/4
 
-curl -i -X DELETE -H "X-Session-ID: $SESSION" \
-  http://127.0.0.1:8000/api/cores/NUC-Omega
+curl -i -X DELETE http://127.0.0.1:8000/api/cores/NUC-Omega
 ```
 
 The values in this example are illustrative. Always use the values from the current campaign's clues because they change after a restart.
 
-`GET /api/status` shows the team's current mission. A shared session works between distant clients when they connect to the same server and use the same `X-Session-ID`. State is currently held in memory, so restarting the server resets team progress and creates a new campaign.
+`GET /api/status` shows the current mission. State is held in memory, so restarting the server resets progress and creates a new campaign.
 
 ## Tests
 
