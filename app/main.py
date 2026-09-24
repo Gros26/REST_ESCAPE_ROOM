@@ -1,3 +1,6 @@
+import base64
+import hashlib
+import hmac
 import json
 import os
 import secrets
@@ -5,7 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query, Request, status
+from fastapi import FastAPI, Header, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
@@ -43,7 +46,39 @@ class GameState:
     won: bool = False
 
 
-game_state = GameState()
+GAME_SIGNING_SECRET = os.getenv("GAME_SIGNING_SECRET") or secrets.token_hex(32)
+
+
+def _b64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).decode().rstrip("=")
+
+
+def _unb64url(data: str) -> bytes:
+    return base64.urlsafe_b64decode(data + "=" * (-len(data) % 4))
+
+
+def encode_game_state(state: GameState) -> str:
+    payload = _b64url(json.dumps({"mission": state.mission, "won": state.won}).encode())
+    signature = _b64url(
+        hmac.new(GAME_SIGNING_SECRET.encode(), payload.encode(), hashlib.sha256).digest()
+    )
+    return f"{payload}.{signature}"
+
+
+def decode_game_state(token: str) -> GameState:
+    if not token:
+        return GameState()
+    try:
+        payload, signature = token.split(".")
+        expected = _b64url(
+            hmac.new(GAME_SIGNING_SECRET.encode(), payload.encode(), hashlib.sha256).digest()
+        )
+        if not hmac.compare_digest(signature, expected):
+            raise ValueError("invalid signature")
+        data = json.loads(_unb64url(payload))
+        return GameState(mission=int(data["mission"]), won=bool(data["won"]))
+    except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+        raise HTTPException(status_code=400, detail="Invalid game state token.")
 
 
 class AccessRequest(BaseModel):
@@ -203,26 +238,35 @@ def welcome() -> dict[str, Any]:
         "message": "Welcome to the REST Escape Room.",
         "campaign": campaign.title,
         "story": campaign.story,
-        "instructions": "Start by requesting mission 1.",
+        "instructions": "Start by requesting mission 1. Send no X-Game-State to begin a fresh game.",
         "first_request": "GET /api/missions/1",
+        "game_state_header": "X-Game-State",
         "documentation": "/docs",
     }
 
 
 @app.get("/api/missions/{mission_number}")
-def get_mission(mission_number: int) -> dict[str, Any]:
+def get_mission(
+    mission_number: int,
+    x_game_state: str = Header(default=""),
+) -> JSONResponse:
     if mission_number not in (1, 2, 3, 4):
         raise HTTPException(status_code=404, detail="That mission does not exist.")
 
-    if mission_number != game_state.mission:
-        raise HTTPException(status_code=409, detail=f"Your current mission is {game_state.mission}.")
+    state = decode_game_state(x_game_state)
+    if mission_number != state.mission:
+        raise HTTPException(status_code=409, detail=f"Your current mission is {state.mission}.")
 
-    return {
-        "mission": mission_number,
-        "campaign": campaign.title,
-        "clue": campaign.clues[mission_number],
-        "generated_by": campaign_source,
-    }
+    return JSONResponse(
+        status_code=200,
+        content={
+            "mission": mission_number,
+            "campaign": campaign.title,
+            "clue": campaign.clues[mission_number],
+            "generated_by": campaign_source,
+        },
+        headers={"X-Game-State": encode_game_state(state)},
+    )
 
 
 @app.get("/api/files")
@@ -230,6 +274,7 @@ def inspect_files(
     request: Request,
     level: str | None = Query(default=None),
     year: int | None = Query(default=None),
+    x_game_state: str = Header(default=""),
 ) -> JSONResponse:
     query_items = list(request.query_params.multi_items())
     exact_query = len(query_items) == 2 and dict(query_items) == {
@@ -239,49 +284,81 @@ def inspect_files(
     if not exact_query or level != campaign.security_level or year != campaign.file_year:
         raise HTTPException(status_code=400, detail="Use exactly the values requested by mission 1.")
 
-    if game_state.mission != 1:
-        raise HTTPException(status_code=409, detail=f"Your current mission is {game_state.mission}.")
-    game_state.mission = 2
+    state = decode_game_state(x_game_state)
+    if state.mission != 1:
+        raise HTTPException(status_code=409, detail=f"Your current mission is {state.mission}.")
+
+    next_state = encode_game_state(GameState(mission=2, won=False))
     return JSONResponse(
         status_code=200,
         content={"message": "Classified file found.", "next_mission": next_mission(2)},
+        headers={"X-Game-State": next_state},
     )
 
 
 @app.post("/api/accesses", status_code=status.HTTP_201_CREATED)
-def open_access(data: AccessRequest) -> dict[str, Any]:
+def open_access(
+    data: AccessRequest,
+    x_game_state: str = Header(default=""),
+) -> JSONResponse:
     if data.alias != campaign.alias or data.role != campaign.role:
         raise HTTPException(status_code=403, detail="The alias or role is incorrect.")
 
-    if game_state.mission != 2:
-        raise HTTPException(status_code=409, detail=f"Your current mission is {game_state.mission}.")
-    game_state.mission = 3
-    return {"message": "Access granted.", "security_token": campaign.token, "next_mission": next_mission(3)}
+    state = decode_game_state(x_game_state)
+    if state.mission != 2:
+        raise HTTPException(status_code=409, detail=f"Your current mission is {state.mission}.")
+
+    next_state = encode_game_state(GameState(mission=3, won=False))
+    return JSONResponse(
+        status_code=status.HTTP_201_CREATED,
+        content={
+            "message": "Access granted.",
+            "security_token": campaign.token,
+            "next_mission": next_mission(3),
+        },
+        headers={"X-Game-State": next_state},
+    )
 
 
 @app.patch("/api/firewall")
-def update_firewall(data: FirewallRequest) -> dict[str, Any]:
+def update_firewall(
+    data: FirewallRequest,
+    x_game_state: str = Header(default=""),
+) -> JSONResponse:
     if data.state != "offline" or data.security_token != campaign.token:
         raise HTTPException(status_code=403, detail="The firewall state or token is incorrect.")
 
-    if game_state.mission != 3:
-        raise HTTPException(status_code=409, detail=f"Your current mission is {game_state.mission}.")
-    game_state.mission = 4
-    return {"message": f"Firewall breached. Core {campaign.core_id} is exposed.", "next_mission": next_mission(4)}
+    state = decode_game_state(x_game_state)
+    if state.mission != 3:
+        raise HTTPException(status_code=409, detail=f"Your current mission is {state.mission}.")
+
+    next_state = encode_game_state(GameState(mission=4, won=False))
+    return JSONResponse(
+        status_code=200,
+        content={"message": f"Firewall breached. Core {campaign.core_id} is exposed.", "next_mission": next_mission(4)},
+        headers={"X-Game-State": next_state},
+    )
 
 
 @app.delete("/api/cores/{core_id}", status_code=status.HTTP_204_NO_CONTENT)
-def destroy_core(core_id: str) -> None:
-    if game_state.mission != 4:
-        raise HTTPException(status_code=409, detail=f"Your current mission is {game_state.mission}.")
+def destroy_core(
+    core_id: str,
+    x_game_state: str = Header(default=""),
+) -> Response:
+    state = decode_game_state(x_game_state)
+    if state.mission != 4:
+        raise HTTPException(status_code=409, detail=f"Your current mission is {state.mission}.")
     if core_id != campaign.core_id:
         raise HTTPException(status_code=404, detail="Core not found.")
 
-    game_state.won = True
-    game_state.mission = 5
-    return None
+    next_state = encode_game_state(GameState(mission=5, won=True))
+    return Response(
+        status_code=status.HTTP_204_NO_CONTENT,
+        headers={"X-Game-State": next_state},
+    )
 
 
 @app.get("/api/status")
-def game_status() -> dict[str, Any]:
-    return {"current_mission": game_state.mission, "won": game_state.won, "campaign": campaign.title}
+def game_status(x_game_state: str = Header(default="")) -> dict[str, Any]:
+    state = decode_game_state(x_game_state)
+    return {"current_mission": state.mission, "won": state.won, "campaign": campaign.title}
